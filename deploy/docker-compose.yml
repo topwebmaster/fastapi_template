@@ -1,0 +1,114 @@
+version: '3.9'
+
+services:
+  api: &main_app
+    build:
+      context: .
+      dockerfile: ./deploy/Dockerfile
+      target: prod
+    image: fast_template:${FAST_TEMPLATE_VERSION:-latest}
+    restart: always
+    env_file:
+    - .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      FAST_TEMPLATE_HOST: 0.0.0.0
+      FAST_TEMPLATE_DB_HOST: fast_template-db
+      FAST_TEMPLATE_DB_PORT: 5432
+      FAST_TEMPLATE_DB_USER: fast_template
+      FAST_TEMPLATE_DB_PASS: fast_template
+      FAST_TEMPLATE_DB_BASE: fast_template
+      FAST_TEMPLATE_REDIS_HOST: fast_template-redis
+      TESTKAFKA_KAFKA_BOOTSTRAP_SERVERS: '["fast_template-kafka:9092"]'
+
+  taskiq-worker:
+    <<: *main_app
+    labels: []
+    command:
+    - taskiq
+    - worker
+    - fast_template.tkq:broker
+
+  db:
+    image: postgres:13.8-bullseye
+    hostname: fast_template-db
+    environment:
+      POSTGRES_PASSWORD: "fast_template"
+      POSTGRES_USER: "fast_template"
+      POSTGRES_DB: "fast_template"
+    volumes:
+    - fast_template-db-data:/var/lib/postgresql/data
+    restart: always
+    healthcheck:
+      test: pg_isready -U fast_template
+      interval: 2s
+      timeout: 3s
+      retries: 40
+
+  migrator:
+    image: fast_template:${FAST_TEMPLATE_VERSION:-latest}
+    restart: "no"
+    command: alembic upgrade head
+    environment:
+      FAST_TEMPLATE_DB_HOST: fast_template-db
+      FAST_TEMPLATE_DB_PORT: 5432
+      FAST_TEMPLATE_DB_USER: fast_template
+      FAST_TEMPLATE_DB_PASS: fast_template
+      FAST_TEMPLATE_DB_BASE: fast_template
+    depends_on:
+      db:
+        condition: service_healthy
+
+  redis:
+    image: bitnami/redis:6.2.5
+    hostname: "fast_template-redis"
+    restart: always
+    environment:
+      ALLOW_EMPTY_PASSWORD: "yes"
+    healthcheck:
+      test: redis-cli ping
+      interval: 1s
+      timeout: 3s
+      retries: 50
+
+  zookeeper:
+    image: "bitnami/zookeeper:3.7.1"
+    hostname: "fast_template-zookeeper"
+    environment:
+      ALLOW_ANONYMOUS_LOGIN: "yes"
+      ZOO_LOG_LEVEL: "ERROR"
+    healthcheck:
+      test: zkServer.sh status
+      interval: 1s
+      timeout: 3s
+      retries: 30
+
+  kafka:
+    image: "bitnami/kafka:3.2.0"
+    hostname: "fast_template-kafka"
+    environment:
+      KAFKA_BROKER_ID: "1"
+      ALLOW_PLAINTEXT_LISTENER: "yes"
+      KAFKA_CFG_LISTENERS: "PLAINTEXT://0.0.0.0:9092"
+      KAFKA_CFG_ADVERTISED_LISTENERS: "PLAINTEXT://fast_template-kafka:9092"
+      KAFKA_CFG_ZOOKEEPER_CONNECT: "fast_template-zookeeper:2181"
+    healthcheck:
+      test: kafka-topics.sh --list --bootstrap-server localhost:9092
+      interval: 1s
+      timeout: 3s
+      retries: 30
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+
+
+
+volumes:
+  fast_template-db-data:
+    name: fast_template-db-data
